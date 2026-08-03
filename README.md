@@ -64,10 +64,12 @@ concatenates layer payloads in spatial order, then sends the reconstructed AV1
 temporal unit to WebCodecs.
 
 The track selector shows the target resolution, spatial layer, dependency
-count, and cumulative bitrate. Malformed dependency chains are disabled. This
-is manual selection only: there is no ABR or runtime layer switching, and a
-missing layer causes delta frames to be dropped until a complete independent
-unit arrives. Playback is spatial-only (one temporal layer), clear LOC only.
+count, and cumulative bitrate. Malformed dependency chains are disabled. Start
+creates the initial dependency-chain subscriptions. Later dropdown changes are
+rolling: downswitches unsubscribe unneeded enhancement tracks; upswitches add
+missing dependencies without restarting the decoder. A changed chain resumes
+on its next complete independent unit. Selection remains manual; there is no
+ABR. Playback is spatial-only (one temporal layer), clear LOC only.
 AV1 capability is checked with `VideoDecoder.isConfigSupported()`; current
 Chrome and Edge are the acceptance targets. The player does not provide a
 fallback when the browser rejects the advertised AV1 configuration.

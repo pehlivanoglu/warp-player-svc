@@ -168,6 +168,26 @@ describe("Av1SvcAssembler", () => {
     ]);
   });
 
+  it("can require a keyframe before first output", () => {
+    const output: MOQObject[] = [];
+    const assembler = new Av1SvcAssembler(tracks, {
+      maxWaitMs: 100,
+      waitForIndependent: true,
+      onObject: (value) => output.push(value),
+    });
+
+    for (let sid = 0; sid < 3; sid++) {
+      assembler.push(tracks[sid], object(sid, 0n, false));
+    }
+    expect(output).toHaveLength(0);
+
+    for (let sid = 0; sid < 3; sid++) {
+      assembler.push(tracks[sid], object(sid, 1n, true));
+    }
+    expect(output).toHaveLength(1);
+    expect(output[0].location.object).toBe(1n);
+  });
+
   it("bounds pending state and clears timers on dispose", () => {
     jest.useFakeTimers();
     const drops: string[] = [];

@@ -26,6 +26,7 @@ export interface Av1SvcAssemblerOptions {
   onObject: (object: MOQObject) => void;
   onDrop?: (reason: string) => void;
   maxPendingUnits?: number;
+  waitForIndependent?: boolean;
 }
 
 /** Reassembles LOC AV1 spatial layers into temporal units. */
@@ -37,7 +38,7 @@ export class Av1SvcAssembler {
   private readonly finishedOrder: string[] = [];
   private readonly waitMs: number;
   private readonly maxPending: number;
-  private awaitingIndependent = false;
+  private awaitingIndependent: boolean;
   private disposed = false;
 
   constructor(
@@ -49,6 +50,7 @@ export class Av1SvcAssembler {
     );
     this.waitMs = Math.max(100, options.maxWaitMs);
     this.maxPending = Math.max(1, options.maxPendingUnits ?? 64);
+    this.awaitingIndependent = options.waitForIndependent ?? false;
     for (const track of this.tracks) {
       this.trackIds.set(trackKey(track), track.spatialId as number);
     }

@@ -14,6 +14,7 @@ import {
 import { Cc608Source } from "./cc608/source";
 import type { Cc608Sink, Cc608Snapshot } from "./cc608/types";
 import { Av1SvcAssembler } from "./loc/av1svc";
+import { getLocFrameMarking } from "./loc/extensions";
 import {
   LocmafTrackState,
   decompressMoofWithTrackInfo,
@@ -38,6 +39,23 @@ import {
   DRMSystem,
   resolveAv1SvcDependencyChain,
 } from "./warpcatalog";
+
+interface Av1SvcSwitchCandidate {
+  assembler: Av1SvcAssembler;
+  chain: WarpTrack[];
+  selected: WarpTrack;
+  added: WarpTrack[];
+  removed: WarpTrack[];
+  pipeline: WebCodecsLocPipeline;
+  upswitch: boolean;
+  holdingCurrent: boolean;
+  heldCurrent: MOQObject[];
+  committed: boolean;
+  timeout: ReturnType<typeof setTimeout> | null;
+  error: Error | null;
+  ready: Promise<void>;
+  resolve: () => void;
+}
 
 /**
  * Player class for handling MOQ transport connections, MSF/CMSF track subscriptions, and UI updates.
@@ -139,6 +157,9 @@ export class Player {
   /** Active WebCodecs pipeline when LOC playback is engaged. */
   private webcodecsPipeline: WebCodecsLocPipeline | null = null;
   private av1SvcAssembler: Av1SvcAssembler | null = null;
+  private av1SvcChain: WarpTrack[] = [];
+  private av1SvcCandidate: Av1SvcSwitchCandidate | null = null;
+  private av1SvcSwitching = false;
   /**
    * Display label for the DRM system negotiated for the current playback.
    * One of "Widevine" | "PlayReady" | "FairPlay" | "ClearKey", or null when
@@ -610,8 +631,11 @@ export class Player {
       }
     });
     this.trackSubscriptions.clear();
+    this.cancelAv1SvcCandidate();
     this.av1SvcAssembler?.dispose();
     this.av1SvcAssembler = null;
+    this.av1SvcChain = [];
+    this.av1SvcSwitching = false;
 
     if (this.connection) {
       this.logger.info("Disconnecting from server...");
@@ -1430,12 +1454,25 @@ export class Player {
     detailsContainer.id = `${selectId}-details`;
 
     // Event listener to update details when selection changes
-    select.addEventListener("change", (_e) => {
+    select.addEventListener("change", async (_e) => {
       const selectedOption = select.options[select.selectedIndex];
       if (selectedOption.title) {
         detailsContainer.textContent = selectedOption.title;
       } else {
         detailsContainer.textContent = "No additional details available";
+      }
+      if (id === "video-tracks" && this.playbackStarted) {
+        select.disabled = true;
+        try {
+          await this.switchAv1SvcTrack(selectedOption);
+        } catch (error) {
+          this.logger.error(
+            `[AV1 SVC] Layer switch failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          select.value = this.videoTrack?.name ?? select.value;
+        } finally {
+          select.disabled = false;
+        }
       }
     });
 
@@ -1553,8 +1590,11 @@ export class Player {
 
     // Stop synchronized playback first
     this.stopSynchronizedPlayback();
+    this.cancelAv1SvcCandidate();
     this.av1SvcAssembler?.dispose();
     this.av1SvcAssembler = null;
+    this.av1SvcChain = [];
+    this.av1SvcSwitching = false;
 
     // Unsubscribe from all active track subscriptions
     if (this.client && this.trackSubscriptions.size > 0) {
@@ -2955,27 +2995,15 @@ export class Player {
       this.logger.info(
         `[AV1 SVC] Dependency chain: ${videoChain.map((track) => track.name).join(" -> ")}`,
       );
-      this.av1SvcAssembler = new Av1SvcAssembler(videoChain, {
-        maxWaitMs: this.minimalBufferMs,
-        onObject: (obj) => {
-          this.logger.debug(
-            `[AV1 SVC] ASSEMBLED group=${obj.location.group} object=${obj.location.object} layers=${videoChain.length} payloadBytes=${obj.data.byteLength}`,
-          );
-          pipeline.routeObject("video", obj);
-        },
-        onDrop: (reason) => this.logger.warn(`[AV1 SVC] ${reason}`),
-      });
+      this.av1SvcChain = videoChain;
+      this.av1SvcAssembler = this.createAv1SvcAssembler(videoChain, pipeline);
     }
-    const svcAssembler = this.av1SvcAssembler;
 
     const subscriptions = await Promise.allSettled(
       videoChain.map((track) =>
         this.subscribeToVideoTrack(track, (obj) => {
-          if (svcAssembler) {
-            // this.logger.info(
-            //   `[AV1 SVC] RX track=${track.name} spatialId=${track.spatialId} group=${obj.location.group} object=${obj.location.object} payloadBytes=${obj.data.byteLength}`,
-            // );
-            svcAssembler.push(track, obj);
+          if (isSvc) {
+            this.routeAv1SvcObject(track, obj);
           } else {
             pipeline.routeObject("video", obj);
           }
@@ -2992,6 +3020,7 @@ export class Player {
       await this.unsubscribeTracks(videoChain);
       this.av1SvcAssembler?.dispose();
       this.av1SvcAssembler = null;
+      this.av1SvcChain = [];
       await pipeline.dispose();
       if (this.webcodecsMetricsTimer !== null) {
         clearInterval(this.webcodecsMetricsTimer);
@@ -3006,6 +3035,243 @@ export class Player {
       await this.subscribeLocAudioTrack(audioTrack, (obj) => {
         pipeline.routeObject("audio", obj);
       });
+    }
+  }
+
+  private createAv1SvcAssembler(
+    chain: WarpTrack[],
+    pipeline: WebCodecsLocPipeline,
+    waitForIndependent = false,
+  ): Av1SvcAssembler {
+    return new Av1SvcAssembler(chain, {
+      maxWaitMs: this.minimalBufferMs,
+      waitForIndependent,
+      onObject: (obj) => {
+        this.logger.debug(
+          `[AV1 SVC] ASSEMBLED group=${obj.location.group} object=${obj.location.object} layers=${chain.length} payloadBytes=${obj.data.byteLength}`,
+        );
+        this.routeCurrentAv1SvcOutput(pipeline, obj);
+      },
+      onDrop: (reason) => this.logger.warn(`[AV1 SVC] ${reason}`),
+    });
+  }
+
+  private routeAv1SvcObject(track: WarpTrack, obj: MOQObject): void {
+    const candidate = this.av1SvcCandidate;
+    const currentAssembler = this.av1SvcAssembler;
+    if (candidate && this.chainContains(candidate.chain, track)) {
+      candidate.assembler.push(track, obj);
+    }
+    const active = this.av1SvcChain.some(
+      (candidate) =>
+        candidate.name === track.name &&
+        candidate.namespace === track.namespace,
+    );
+    if (
+      !active ||
+      !currentAssembler ||
+      currentAssembler !== this.av1SvcAssembler
+    ) {
+      return;
+    }
+    this.logger.debug(
+      `[AV1 SVC] RX track=${track.name} spatialId=${track.spatialId} group=${obj.location.group} object=${obj.location.object} payloadBytes=${obj.data.byteLength}`,
+    );
+    currentAssembler.push(track, obj);
+  }
+
+  private routeCurrentAv1SvcOutput(
+    pipeline: WebCodecsLocPipeline,
+    obj: MOQObject,
+  ): void {
+    const candidate = this.av1SvcCandidate;
+    if (candidate?.upswitch) {
+      const independent = getLocFrameMarking(obj.extensions)?.independent;
+      if (candidate.holdingCurrent || independent) {
+        candidate.holdingCurrent = true;
+        candidate.heldCurrent.push(obj);
+        return;
+      }
+    }
+    pipeline.routeObject("video", obj);
+  }
+
+  private chainContains(chain: WarpTrack[], track: WarpTrack): boolean {
+    return chain.some(
+      (candidate) =>
+        candidate.name === track.name &&
+        candidate.namespace === track.namespace,
+    );
+  }
+
+  private commitAv1SvcCandidate(
+    candidate: Av1SvcSwitchCandidate,
+    firstObject: MOQObject,
+  ): void {
+    if (this.av1SvcCandidate !== candidate || candidate.committed) {
+      return;
+    }
+    candidate.committed = true;
+    if (candidate.timeout !== null) {
+      clearTimeout(candidate.timeout);
+    }
+    const previous = this.av1SvcAssembler;
+    this.av1SvcCandidate = null;
+    this.av1SvcAssembler = candidate.assembler;
+    this.av1SvcChain = candidate.chain;
+    this.videoTrack = candidate.selected;
+    candidate.pipeline.setVideoTrack(candidate.selected);
+    this.updateEngineLegend();
+    previous?.dispose();
+    candidate.heldCurrent.length = 0;
+    candidate.pipeline.routeObject("video", firstObject);
+    void this.unsubscribeTracks(candidate.removed).finally(() => {
+      this.logger.info(
+        `[AV1 SVC] Switched target to ${candidate.selected.name}; active tracks: ${candidate.chain.map((track) => track.name).join(", ")}`,
+      );
+      candidate.resolve();
+    });
+  }
+
+  private rollbackAv1SvcCandidate(
+    candidate: Av1SvcSwitchCandidate,
+    error: Error,
+  ): void {
+    if (this.av1SvcCandidate !== candidate) {
+      return;
+    }
+    if (candidate.timeout !== null) {
+      clearTimeout(candidate.timeout);
+    }
+    this.av1SvcCandidate = null;
+    candidate.error = error;
+    candidate.assembler.dispose();
+    for (const object of candidate.heldCurrent) {
+      candidate.pipeline.routeObject("video", object);
+    }
+    candidate.heldCurrent.length = 0;
+    void this.unsubscribeTracks(candidate.added).finally(candidate.resolve);
+  }
+
+  private cancelAv1SvcCandidate(): void {
+    const candidate = this.av1SvcCandidate;
+    if (!candidate) {
+      return;
+    }
+    if (candidate.timeout !== null) {
+      clearTimeout(candidate.timeout);
+    }
+    this.av1SvcCandidate = null;
+    candidate.assembler.dispose();
+    candidate.heldCurrent.length = 0;
+    candidate.resolve();
+  }
+
+  private async switchAv1SvcTrack(option: HTMLOptionElement): Promise<void> {
+    if (
+      this.av1SvcSwitching ||
+      !this.webcodecsPipeline ||
+      this.av1SvcChain.length === 0
+    ) {
+      return;
+    }
+    const catalog = this.catalogManager.getCatalog();
+    const selected = catalog
+      ? this.getTrackFromCatalog(
+          option.dataset.namespace ?? "",
+          option.dataset.trackName ?? "",
+          "video",
+        )
+      : undefined;
+    if (!catalog || !selected || selected.spatialId === undefined) {
+      throw new Error("rolling switch requires a cataloged AV1 SVC track");
+    }
+
+    const nextChain = resolveAv1SvcDependencyChain(catalog, selected);
+    const key = (track: WarpTrack) => `${track.namespace ?? ""}/${track.name}`;
+    const currentKeys = new Set(this.av1SvcChain.map(key));
+    const nextKeys = new Set(nextChain.map(key));
+    if (
+      nextChain.length === this.av1SvcChain.length &&
+      nextChain.every((track) => currentKeys.has(key(track)))
+    ) {
+      return;
+    }
+
+    this.av1SvcSwitching = true;
+    try {
+      const added = nextChain.filter((track) => !currentKeys.has(key(track)));
+      const removed = this.av1SvcChain.filter(
+        (track) => !nextKeys.has(key(track)),
+      );
+
+      let resolve!: () => void;
+      const ready = new Promise<void>((done) => {
+        resolve = done;
+      });
+      const candidate: Av1SvcSwitchCandidate = {
+        assembler: new Av1SvcAssembler(nextChain, {
+          maxWaitMs: this.minimalBufferMs,
+          waitForIndependent: added.length > 0,
+          onObject: (obj) => {
+            if (candidate.committed) {
+              candidate.pipeline.routeObject("video", obj);
+            } else {
+              this.commitAv1SvcCandidate(candidate, obj);
+            }
+          },
+          onDrop: (reason) => this.logger.warn(`[AV1 SVC] ${reason}`),
+        }),
+        chain: nextChain,
+        selected,
+        added,
+        removed,
+        pipeline: this.webcodecsPipeline,
+        upswitch: added.length > 0,
+        holdingCurrent: false,
+        heldCurrent: [],
+        committed: false,
+        timeout: null,
+        error: null,
+        ready,
+        resolve,
+      };
+      this.av1SvcCandidate = candidate;
+
+      const additions = await Promise.allSettled(
+        added.map((track) =>
+          this.subscribeToVideoTrack(track, (obj) =>
+            this.routeAv1SvcObject(track, obj),
+          ),
+        ),
+      );
+      const failure = additions.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      if (failure) {
+        this.rollbackAv1SvcCandidate(
+          candidate,
+          failure.reason instanceof Error
+            ? failure.reason
+            : new Error(String(failure.reason)),
+        );
+      } else if (this.av1SvcCandidate === candidate && !candidate.committed) {
+        candidate.timeout = setTimeout(
+          () =>
+            this.rollbackAv1SvcCandidate(
+              candidate,
+              new Error("timed out waiting for a complete switch unit"),
+            ),
+          3000,
+        );
+      }
+      await candidate.ready;
+      if (candidate.error) {
+        throw candidate.error;
+      }
+    } finally {
+      this.av1SvcSwitching = false;
     }
   }
 

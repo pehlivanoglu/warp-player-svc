@@ -649,6 +649,14 @@ export class WebCodecsLocPipeline implements IPlaybackPipeline {
     return this.canvas;
   }
 
+  /** Update selected AV1 spatial target without restarting decoder. */
+  setVideoTrack(track: WarpTrack): void {
+    this.videoTrack = track;
+    this.logger.info(
+      `[WebCodecsLoc] switched target to ${track.name} (${track.width ?? "?"}x${track.height ?? "?"})`,
+    );
+  }
+
   setBufferConfig(config: PipelineBufferConfig): void {
     this.bufferConfig = config;
   }
@@ -838,6 +846,15 @@ export class WebCodecsLocPipeline implements IPlaybackPipeline {
       return;
     }
     try {
+      if (
+        toDraw.frame.displayWidth === this.videoTrack?.width &&
+        toDraw.frame.displayHeight === this.videoTrack?.height &&
+        (this.canvas.width !== toDraw.frame.displayWidth ||
+          this.canvas.height !== toDraw.frame.displayHeight)
+      ) {
+        this.canvas.width = toDraw.frame.displayWidth;
+        this.canvas.height = toDraw.frame.displayHeight;
+      }
       this.ctx.drawImage(
         toDraw.frame,
         0,

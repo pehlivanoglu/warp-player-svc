@@ -88,6 +88,7 @@ export class TracksManager {
   private client: Client | null = null;
   private logger: ILogger;
   private isClosing: boolean = false;
+  private unsubscribedAliases = new Set<string>();
 
   constructor(wt: WebTransport, controlStream?: CtrlStream, client?: Client) {
     this.wt = wt;
@@ -326,6 +327,12 @@ export class TracksManager {
                 `(buffered ${bufferedObjects.length} objects)`,
             );
             return; // Exit gracefully during shutdown
+          }
+          if (this.unsubscribedAliases.has(trackAlias.toString())) {
+            this.logger.debug(
+              `Discarding late data for unsubscribed track ${trackAlias}`,
+            );
+            return;
           }
 
           const trackInfo =
@@ -610,6 +617,7 @@ export class TracksManager {
     this.isClosing = true;
     // Clear all callbacks
     this.objectCallbacks.clear();
+    this.unsubscribedAliases.clear();
     this.trackRegistry.clear();
   }
 
@@ -923,6 +931,7 @@ export class TracksManager {
       const subscribeOk = await subscribePromise;
       const trackAlias = subscribeOk.trackAlias;
       const largest = subscribeOk.largest;
+      this.unsubscribedAliases.delete(trackAlias.toString());
 
       // When a joining FETCH covers everything up to the largest location,
       // drop those objects here so the callback sees each object exactly once.
@@ -993,6 +1002,7 @@ export class TracksManager {
     // According to MOQ Transport draft-14, the unsubscribe message must use the same
     // request ID that was used in the original subscribe message
     const requestId = trackInfo.requestId;
+    this.unsubscribedAliases.add(trackAlias.toString());
 
     // Need to cast to Message type to satisfy the CtrlStream.send() parameter type
     const unsubscribeMsg = {
@@ -1027,6 +1037,7 @@ export class TracksManager {
         `Successfully unsubscribed from track ${trackDescription}`,
       );
     } catch (error) {
+      this.unsubscribedAliases.delete(trackAlias.toString());
       this.logger.error(
         `Error unsubscribing from track ${trackDescription}:`,
         error,

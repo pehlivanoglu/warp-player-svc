@@ -167,8 +167,9 @@ The codebase is organized into several key modules:
      subscribes every layer concurrently, and keys pending temporal units by
      MoQ group/object ID. `Av1SvcAssembler` validates aligned timestamps and
      layer IDs, concatenates base-to-target payloads, and requires a complete
-     independent unit after loss before decoding resumes. This is clear LOC,
-     spatial-only, manual layer selection; no ABR or runtime switching.
+     independent unit after loss before decoding resumes. Dropdown changes
+     roll subscriptions up or down without replacing the decoder. This is
+     clear LOC, spatial-only, manual layer selection; no ABR.
 
 5. **Pipeline Layer**:
    - Located in `src/pipeline/`
