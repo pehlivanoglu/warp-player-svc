@@ -54,6 +54,24 @@ packagings:
 - **LOC** (`packaging: "loc"`, [draft-mzanaty-moq-loc]) — raw codec frames,
   decoded directly by the WebCodecs pipeline (clear content only).
 
+### AV1 spatial-SVC playback
+
+Clear LOC AV1 tracks may describe spatial layers with `spatialId` and
+`depends`. Selecting a layer subscribes its full dependency chain: selecting
+layer 2 subscribes layers 0, 1, and 2. The player aligns matching MoQ
+group/object IDs, validates LOC RFC 9626 frame markings and capture timestamps,
+concatenates layer payloads in spatial order, then sends the reconstructed AV1
+temporal unit to WebCodecs.
+
+The track selector shows the target resolution, spatial layer, dependency
+count, and cumulative bitrate. Malformed dependency chains are disabled. This
+is manual selection only: there is no ABR or runtime layer switching, and a
+missing layer causes delta frames to be dropped until a complete independent
+unit arrives. Playback is spatial-only (one temporal layer), clear LOC only.
+AV1 capability is checked with `VideoDecoder.isConfigSupported()`; current
+Chrome and Edge are the acceptance targets. The player does not provide a
+fallback when the browser rejects the advertised AV1 configuration.
+
 Catalogs follow **MSF [draft-ietf-moq-msf-01]** with **CMSF
 [draft-ietf-moq-cmsf-01]** for CMAF packaging. The catalog `version` string must
 be `"draft-01"`. Initialization data lives in a catalog-level `initDataList`,
@@ -95,7 +113,8 @@ warp-player/
 │   │   ├── hevc.ts       # HEVC (H.265) NALU walker / hvcC builder
 │   │   ├── aac.ts        # AAC AudioSpecificConfig from catalog metadata
 │   │   ├── opus.ts       # Opus ID-header (OpusHead) from catalog metadata
-│   │   └── extensions.ts # LOC extension-header parsing (capture timestamps)
+│   │   ├── av1svc.ts     # AV1 spatial-layer temporal-unit assembler
+│   │   └── extensions.ts # LOC timestamps and RFC 9626 frame markings
 │   ├── locmaf/           # LOCMAF (compact CMAF packaging) for the MSE pipeline
 │   │   ├── locmaf.ts     # Version-gating wrapper (LOCMAF v0.3 only)
 │   │   ├── vi64.ts       # MOQT (draft-18 §1.4.1) varints + zigzag

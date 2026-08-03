@@ -144,6 +144,28 @@ export class WebCodecsLocPipeline implements IPlaybackPipeline {
     const width = this.videoTrack.width ?? 1280;
     const height = this.videoTrack.height ?? 720;
 
+    if (this.videoTrack.codec?.toLowerCase().startsWith("av01")) {
+      const config: VideoDecoderConfig = {
+        codec: this.videoTrack.codec,
+        codedWidth: width,
+        codedHeight: height,
+        optimizeForLatency: true,
+      };
+      let support: VideoDecoderSupport;
+      try {
+        support = await VideoDecoder.isConfigSupported(config);
+      } catch (error) {
+        throw new Error(
+          `AV1 WebCodecs capability check failed; use a current Chrome or Edge build with AV1 enabled (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+      if (!support.supported) {
+        throw new Error(
+          `AV1 WebCodecs decoding is unsupported for ${this.videoTrack.codec}; use a current Chrome or Edge build with AV1 enabled`,
+        );
+      }
+    }
+
     // Create a canvas the same size as the video container and overlay it
     // on top of the <video> element. The video element is hidden while
     // this pipeline runs.
@@ -742,6 +764,19 @@ export class WebCodecsLocPipeline implements IPlaybackPipeline {
     // VideoFrame.timestamp is microseconds.
     const presentationMs = frame.timestamp / 1000;
     this.ensureAnchor(presentationMs);
+    const existing = this.frameQueue.findIndex(
+      (queued) => queued.presentationMs === presentationMs,
+    );
+    if (existing >= 0) {
+      const queued = this.frameQueue[existing].frame;
+      if (frameArea(frame) > frameArea(queued)) {
+        queued.close();
+        this.frameQueue[existing] = { presentationMs, frame };
+      } else {
+        frame.close();
+      }
+      return;
+    }
     this.frameQueue.push({ presentationMs, frame });
     // Keep the queue sorted in case decoder emits slightly out of order.
     this.frameQueue.sort((a, b) => a.presentationMs - b.presentationMs);
@@ -978,4 +1013,8 @@ export class WebCodecsLocPipeline implements IPlaybackPipeline {
     }
     return true;
   }
+}
+
+function frameArea(frame: VideoFrame): number {
+  return frame.displayWidth * frame.displayHeight;
 }

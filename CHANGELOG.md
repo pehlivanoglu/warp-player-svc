@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Clear LOC AV1 spatial-SVC playback. Catalog dependency chains are validated,
+  all layers through the selected target are subscribed, and matching objects
+  are reconstructed into one WebCodecs AV1 temporal unit using RFC 9626 frame
+  markings. Includes strict missing-layer recovery and AV1 capability checks.
 - Timed-text overlay seam (`src/overlay`): a snapshot timeline with `push`
   (open-ended state) and `addCue` (intervals) channels, resolved by search
   against the picture clock, plus a CTA-608 renderer that paints screens on

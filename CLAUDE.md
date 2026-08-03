@@ -96,9 +96,10 @@ warp-player/
 │   │   ├── avc.ts        # AVC NALU walker, AVCDecoderConfigurationRecord
 │   │   ├── hevc.ts       # HEVC NALU walker, HEVCDecoderConfigurationRecord
 │   │   ├── av1.ts        # AV1 OBU walker, sequence-header / keyframe detection
+│   │   ├── av1svc.ts     # LOC AV1 spatial dependency assembler
 │   │   ├── aac.ts        # AAC AudioSpecificConfig from catalog metadata
 │   │   ├── opus.ts       # Opus ID-header (OpusHead) builder
-│   │   └── extensions.ts # LOC extension-header parsing (capture timestamps)
+│   │   └── extensions.ts # LOC timestamps and RFC 9626 frame markings
 │   ├── locmaf/           # LOCMAF (compact CMAF packaging) for MSE pipeline
 │   │   ├── locmaf.ts     # Version-gating wrapper used by player.ts
 │   │   ├── vi64.ts       # MOQT (draft-18 §1.4.1) varints + zigzag
@@ -160,7 +161,14 @@ The codebase is organized into several key modules:
      via the in-band sequence-header OBU (AV1 needs no `description`)
    - Synthesizes `AudioDecoderConfig.description` for AAC (AudioSpecificConfig)
      and Opus (OpusHead) from catalog metadata
-   - Parses MoQ Object extension headers to extract LOC capture timestamps
+   - Parses MoQ Object extension headers for LOC capture timestamps and RFC
+     9626 video frame markings
+   - For AV1 spatial SVC, resolves the selected track's `depends` closure,
+     subscribes every layer concurrently, and keys pending temporal units by
+     MoQ group/object ID. `Av1SvcAssembler` validates aligned timestamps and
+     layer IDs, concatenates base-to-target payloads, and requires a complete
+     independent unit after loss before decoding resumes. This is clear LOC,
+     spatial-only, manual layer selection; no ABR or runtime switching.
 
 5. **Pipeline Layer**:
    - Located in `src/pipeline/`

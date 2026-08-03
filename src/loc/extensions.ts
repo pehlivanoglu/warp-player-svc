@@ -10,9 +10,21 @@
 //   type % 2 == 1  →  ValueBytes  (varint length followed by bytes)
 //
 // LOC property IDs used by mlmpub today (see moqlivemock/internal/sub/loc.go):
+//   0x04  RFC 9626 video frame marking (varint).
 //   0x06  Capture timestamp, microseconds since the Unix epoch (varint).
 
+export const LOC_EXT_FRAME_MARKING = 0x04n;
 export const LOC_EXT_TIMESTAMP = 0x06n;
+
+export interface LocFrameMarking {
+  start: boolean;
+  end: boolean;
+  independent: boolean;
+  discardable: boolean;
+  baseLayerSync: boolean;
+  temporalId: number;
+  layerId: number;
+}
 
 export interface LocKvp {
   type: bigint;
@@ -106,6 +118,34 @@ export function getLocCaptureTimestampUs(
     if (kvp.type === LOC_EXT_TIMESTAMP && kvp.valueVarInt !== undefined) {
       return kvp.valueVarInt;
     }
+  }
+  return null;
+}
+
+/** Decode the two-byte RFC 9626 frame marking used by LOC AV1 SVC. */
+export function getLocFrameMarking(
+  blob: Uint8Array | undefined,
+): LocFrameMarking | null {
+  for (const kvp of parseMoqExtensions(blob)) {
+    if (kvp.type !== LOC_EXT_FRAME_MARKING) {
+      continue;
+    }
+    const value = kvp.valueVarInt;
+    if (value === undefined || value > 0xffffn) {
+      throw new LocExtensionParseError(
+        "LOC frame marking must contain exactly two significant bytes",
+      );
+    }
+    const flags = Number((value >> 8n) & 0xffn);
+    return {
+      start: (flags & 0x80) !== 0,
+      end: (flags & 0x40) !== 0,
+      independent: (flags & 0x20) !== 0,
+      discardable: (flags & 0x10) !== 0,
+      baseLayerSync: (flags & 0x08) !== 0,
+      temporalId: flags & 0x07,
+      layerId: Number(value & 0xffn),
+    };
   }
   return null;
 }

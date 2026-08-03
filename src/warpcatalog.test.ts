@@ -2,6 +2,8 @@ import {
   MSF_SUPPORTED_VERSION,
   WarpCatalog,
   WarpCatalogManager,
+  WarpTrack,
+  resolveAv1SvcDependencyChain,
 } from "./warpcatalog";
 
 describe("WarpCatalogManager draft-01 init data", () => {
@@ -73,5 +75,99 @@ describe("WarpCatalogManager draft-01 init data", () => {
     const mgr = new WarpCatalogManager();
     mgr.handleCatalogData(catalog);
     expect(mgr.getInitData({ name: "x", initRef: "missing" })).toBeUndefined();
+  });
+});
+
+describe("resolveAv1SvcDependencyChain", () => {
+  const tracks: WarpTrack[] = [
+    {
+      name: "base",
+      namespace: "live",
+      packaging: "loc",
+      role: "video",
+      codec: "av01.0.08M.08",
+      renderGroup: 1,
+      framerate: 25,
+      spatialId: 0,
+    },
+    {
+      name: "middle",
+      namespace: "live",
+      packaging: "loc",
+      role: "video",
+      codec: "av01.0.08M.08",
+      renderGroup: 1,
+      framerate: 25,
+      spatialId: 1,
+      depends: ["base"],
+    },
+    {
+      name: "top",
+      namespace: "live",
+      packaging: "loc",
+      role: "video",
+      codec: "av01.0.08M.08",
+      renderGroup: 1,
+      framerate: 25,
+      spatialId: 2,
+      depends: ["middle"],
+    },
+  ];
+  const catalog: WarpCatalog = { version: "draft-01", tracks };
+
+  it.each([
+    [0, ["base"]],
+    [1, ["base", "middle"]],
+    [2, ["base", "middle", "top"]],
+  ])("resolves the layer %i closure", (index, names) => {
+    expect(resolveAv1SvcDependencyChain(catalog, tracks[index])).toEqual(
+      names.map((name) => expect.objectContaining({ name })),
+    );
+  });
+
+  it("leaves ordinary tracks unchanged", () => {
+    const ordinary = { name: "video", packaging: "loc", codec: "av01" };
+    expect(resolveAv1SvcDependencyChain(catalog, ordinary)).toEqual([ordinary]);
+  });
+
+  it.each([
+    ["missing dependency", { ...tracks[2], depends: ["missing"] }],
+    ["SID gap", { ...tracks[2], depends: ["base"] }],
+    ["codec mismatch", { ...tracks[2], codec: "av01.other" }],
+    ["render-group mismatch", { ...tracks[2], renderGroup: 2 }],
+    ["framerate mismatch", { ...tracks[2], framerate: 30 }],
+  ])("rejects %s", (_name, selected) => {
+    expect(() => resolveAv1SvcDependencyChain(catalog, selected)).toThrow();
+  });
+
+  it("rejects cross-namespace dependencies", () => {
+    const selected = { ...tracks[1], depends: ["foreign"] };
+    const foreign = { ...tracks[0], name: "foreign", namespace: "other" };
+    expect(() =>
+      resolveAv1SvcDependencyChain(
+        { ...catalog, tracks: [...tracks, foreign] },
+        selected,
+      ),
+    ).toThrow(/crosses namespaces/);
+  });
+
+  it("rejects dependency cycles", () => {
+    const base = { ...tracks[0], depends: ["middle"] };
+    const middle = { ...tracks[1], depends: ["base"] };
+    expect(() =>
+      resolveAv1SvcDependencyChain(
+        { ...catalog, tracks: [base, middle] },
+        middle,
+      ),
+    ).toThrow();
+  });
+
+  it("rejects duplicate dependency tracks", () => {
+    expect(() =>
+      resolveAv1SvcDependencyChain(
+        { ...catalog, tracks: [...tracks, { ...tracks[0] }] },
+        tracks[1],
+      ),
+    ).toThrow(/duplicated/);
   });
 });

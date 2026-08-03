@@ -1,7 +1,9 @@
 import {
+  LOC_EXT_FRAME_MARKING,
   LOC_EXT_TIMESTAMP,
   LocExtensionParseError,
   getLocCaptureTimestampUs,
+  getLocFrameMarking,
   parseMoqExtensions,
   readQuicVarint,
 } from "./extensions";
@@ -203,5 +205,43 @@ describe("getLocCaptureTimestampUs", () => {
       Number(ts & 0xffn),
     ]);
     expect(getLocCaptureTimestampUs(expected)).toBe(ts);
+  });
+});
+
+describe("getLocFrameMarking", () => {
+  it.each([
+    [0xc000n, false, 0],
+    [0xe000n, true, 0],
+    [0xc001n, false, 1],
+    [0xe002n, true, 2],
+  ])("decodes 0x%s", (value, independent, layerId) => {
+    const blob = concat(quicVarint(LOC_EXT_FRAME_MARKING), quicVarint(value));
+    expect(getLocFrameMarking(blob)).toEqual({
+      start: true,
+      end: true,
+      independent,
+      discardable: false,
+      baseLayerSync: false,
+      temporalId: 0,
+      layerId,
+    });
+  });
+
+  it("returns null when absent", () => {
+    expect(getLocFrameMarking(undefined)).toBeNull();
+  });
+
+  it("rejects markings with TL0PICIDX data", () => {
+    const blob = concat(
+      quicVarint(LOC_EXT_FRAME_MARKING),
+      quicVarint(0xc00001n),
+    );
+    expect(() => getLocFrameMarking(blob)).toThrow(LocExtensionParseError);
+  });
+
+  it("rejects malformed extensions", () => {
+    expect(() => getLocFrameMarking(new Uint8Array([0x04]))).toThrow(
+      LocExtensionParseError,
+    );
   });
 });

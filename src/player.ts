@@ -13,6 +13,7 @@ import {
 } from "./bufferProfile";
 import { Cc608Source } from "./cc608/source";
 import type { Cc608Sink, Cc608Snapshot } from "./cc608/types";
+import { Av1SvcAssembler } from "./loc/av1svc";
 import {
   LocmafTrackState,
   decompressMoofWithTrackInfo,
@@ -35,6 +36,7 @@ import {
   WarpCatalogManager,
   ContentProtection,
   DRMSystem,
+  resolveAv1SvcDependencyChain,
 } from "./warpcatalog";
 
 /**
@@ -136,6 +138,7 @@ export class Player {
 
   /** Active WebCodecs pipeline when LOC playback is engaged. */
   private webcodecsPipeline: WebCodecsLocPipeline | null = null;
+  private av1SvcAssembler: Av1SvcAssembler | null = null;
   /**
    * Display label for the DRM system negotiated for the current playback.
    * One of "Widevine" | "PlayReady" | "FairPlay" | "ClearKey", or null when
@@ -607,6 +610,8 @@ export class Player {
       }
     });
     this.trackSubscriptions.clear();
+    this.av1SvcAssembler?.dispose();
+    this.av1SvcAssembler = null;
 
     if (this.connection) {
       this.logger.info("Disconnecting from server...");
@@ -1345,17 +1350,13 @@ export class Player {
     select.className = "track-select";
 
     // Add tracks to dropdown
-    tracks.forEach((track, index) => {
+    let selected = false;
+    tracks.forEach((track) => {
       const option = document.createElement("option");
       option.value = track.name;
       option.dataset.trackName = track.name;
       option.dataset.namespace = track.namespace || "";
       option.textContent = track.name;
-
-      // Select first track by default
-      if (index === 0) {
-        option.selected = true;
-      }
 
       // Build tooltip containing track details
       const tooltip = [];
@@ -1375,6 +1376,33 @@ export class Player {
         tooltip.push(`Framerate: ${track.framerate} fps`);
       }
 
+      if (track.spatialId !== undefined) {
+        const catalog = this.catalogManager.getCatalog();
+        try {
+          if (!catalog) {
+            throw new Error("catalog is unavailable");
+          }
+          const chain = resolveAv1SvcDependencyChain(catalog, track);
+          const cumulativeBitrate = chain.reduce(
+            (sum, layer) => sum + (layer.bitrate ?? 0),
+            0,
+          );
+          tooltip.push(`Spatial layer: ${track.spatialId}`);
+          tooltip.push(`Dependencies: ${chain.length - 1}`);
+          if (cumulativeBitrate > 0) {
+            tooltip.push(
+              `Cumulative bitrate: ${this.formatBitrate(cumulativeBitrate)}`,
+            );
+          }
+        } catch (error) {
+          option.disabled = true;
+          tooltip.length = 0;
+          tooltip.push(
+            `Invalid AV1 SVC: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
       // Add audio-specific details
       if (track.samplerate) {
         tooltip.push(`Sample Rate: ${track.samplerate} Hz`);
@@ -1386,6 +1414,11 @@ export class Player {
       // Set tooltip as title attribute
       if (tooltip.length > 0) {
         option.title = tooltip.join(" | ");
+      }
+
+      if (!selected && !option.disabled) {
+        option.selected = true;
+        selected = true;
       }
 
       select.appendChild(option);
@@ -1520,6 +1553,8 @@ export class Player {
 
     // Stop synchronized playback first
     this.stopSynchronizedPlayback();
+    this.av1SvcAssembler?.dispose();
+    this.av1SvcAssembler = null;
 
     // Unsubscribe from all active track subscriptions
     if (this.client && this.trackSubscriptions.size > 0) {
@@ -2844,6 +2879,22 @@ export class Player {
     videoTrack: WarpTrack,
     audioTrack: WarpTrack | null,
   ): Promise<void> {
+    const catalog = this.catalogManager.getCatalog();
+    if (!catalog) {
+      this.logger.error(
+        "[WebCodecsLoc] Cannot resolve video dependencies without a catalog",
+      );
+      return;
+    }
+    let videoChain: WarpTrack[];
+    try {
+      videoChain = resolveAv1SvcDependencyChain(catalog, videoTrack);
+    } catch (error) {
+      this.logger.error(
+        `[WebCodecsLoc] Invalid AV1 SVC selection: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     this.logger.info(
       `[WebCodecsLoc] Setting up LOC playback for ${videoTrack.namespace}/${videoTrack.name}` +
         (audioTrack ? ` + ${audioTrack.namespace}/${audioTrack.name}` : ""),
@@ -2899,9 +2950,58 @@ export class Player {
       this.updateBufferLevelUI();
     }, 250);
 
-    await this.subscribeToVideoTrack(videoTrack, (obj) => {
-      pipeline.routeObject("video", obj as unknown as MOQObject);
-    });
+    const isSvc = videoChain.length > 1 || videoTrack.spatialId !== undefined;
+    if (isSvc) {
+      this.logger.info(
+        `[AV1 SVC] Dependency chain: ${videoChain.map((track) => track.name).join(" -> ")}`,
+      );
+      this.av1SvcAssembler = new Av1SvcAssembler(videoChain, {
+        maxWaitMs: this.minimalBufferMs,
+        onObject: (obj) => {
+          this.logger.debug(
+            `[AV1 SVC] ASSEMBLED group=${obj.location.group} object=${obj.location.object} layers=${videoChain.length} payloadBytes=${obj.data.byteLength}`,
+          );
+          pipeline.routeObject("video", obj);
+        },
+        onDrop: (reason) => this.logger.warn(`[AV1 SVC] ${reason}`),
+      });
+    }
+    const svcAssembler = this.av1SvcAssembler;
+
+    const subscriptions = await Promise.allSettled(
+      videoChain.map((track) =>
+        this.subscribeToVideoTrack(track, (obj) => {
+          if (svcAssembler) {
+            // this.logger.info(
+            //   `[AV1 SVC] RX track=${track.name} spatialId=${track.spatialId} group=${obj.location.group} object=${obj.location.object} payloadBytes=${obj.data.byteLength}`,
+            // );
+            svcAssembler.push(track, obj);
+          } else {
+            pipeline.routeObject("video", obj);
+          }
+        }),
+      ),
+    );
+    const failure = subscriptions.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) {
+      this.logger.error(
+        `[AV1 SVC] Dependency subscription failed; rolling back: ${String(failure.reason)}`,
+      );
+      await this.unsubscribeTracks(videoChain);
+      this.av1SvcAssembler?.dispose();
+      this.av1SvcAssembler = null;
+      await pipeline.dispose();
+      if (this.webcodecsMetricsTimer !== null) {
+        clearInterval(this.webcodecsMetricsTimer);
+        this.webcodecsMetricsTimer = null;
+      }
+      this.webcodecsPipeline = null;
+      this.currentPipeline = null;
+      this.playbackStarted = false;
+      return;
+    }
     if (audioTrack) {
       await this.subscribeLocAudioTrack(audioTrack, (obj) => {
         pipeline.routeObject("audio", obj);
@@ -3995,10 +4095,7 @@ export class Player {
    */
   private async subscribeToVideoTrack(
     track: WarpTrack,
-    onObject: (obj: {
-      data: Uint8Array | ArrayBuffer;
-      timing?: { baseMediaDecodeTime?: number; timescale?: number };
-    }) => void,
+    onObject: (obj: MOQObject) => void,
   ): Promise<void> {
     if (!this.client) {
       this.logger.error("Client not initialized");
@@ -4058,6 +4155,29 @@ export class Player {
       );
       throw error;
     }
+  }
+
+  private async unsubscribeTracks(tracks: WarpTrack[]): Promise<void> {
+    if (!this.client) {
+      return;
+    }
+    await Promise.all(
+      tracks.map(async (track) => {
+        const key = `${track.namespace ?? ""}/${track.name}`;
+        const alias = this.trackSubscriptions.get(key);
+        if (alias === undefined) {
+          return;
+        }
+        this.trackSubscriptions.delete(key);
+        try {
+          await this.client?.unsubscribeTrack(alias);
+        } catch (error) {
+          this.logger.warn(
+            `Failed to roll back ${key}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }),
+    );
   }
 
   /**

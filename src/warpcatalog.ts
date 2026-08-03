@@ -122,6 +122,111 @@ export interface WarpTrack {
   [key: string]: any; // For future/custom fields
 }
 
+/** Resolve and validate the LOC AV1 spatial dependency chain. */
+export function resolveAv1SvcDependencyChain(
+  catalog: WarpCatalog,
+  selectedTrack: WarpTrack,
+): WarpTrack[] {
+  if (selectedTrack.spatialId === undefined) {
+    return [selectedTrack];
+  }
+
+  const namespace = selectedTrack.namespace;
+  const chain: WarpTrack[] = [];
+  const seen = new Set<string>();
+  let current = selectedTrack;
+
+  while (true) {
+    const key = `${current.namespace ?? ""}\u0000${current.name}`;
+    if (seen.has(key)) {
+      throw new Error(`AV1 SVC dependency cycle at ${current.name}`);
+    }
+    seen.add(key);
+    validateAv1SvcTrack(current, selectedTrack, namespace);
+    chain.push(current);
+
+    const sid = current.spatialId as number;
+    const dependencies = current.depends ?? [];
+    if (sid === 0) {
+      if (dependencies.length !== 0) {
+        throw new Error(
+          `AV1 SVC base track ${current.name} must not depend on another track`,
+        );
+      }
+      break;
+    }
+    if (dependencies.length !== 1) {
+      throw new Error(
+        `AV1 SVC track ${current.name} must have exactly one dependency`,
+      );
+    }
+
+    const dependencyName = dependencies[0];
+    const matches = catalog.tracks.filter(
+      (track) => track.name === dependencyName,
+    );
+    const localMatches = matches.filter(
+      (track) => track.namespace === namespace,
+    );
+    if (localMatches.length > 1) {
+      throw new Error(
+        `AV1 SVC dependency ${dependencyName} is duplicated in namespace`,
+      );
+    }
+    const dependency = localMatches[0];
+    if (!dependency) {
+      if (matches.length > 0) {
+        throw new Error(
+          `AV1 SVC dependency ${dependencyName} crosses namespaces`,
+        );
+      }
+      throw new Error(`AV1 SVC dependency ${dependencyName} is missing`);
+    }
+    if (dependency.spatialId !== sid - 1) {
+      throw new Error(
+        `AV1 SVC track ${current.name} must depend on spatialId ${sid - 1}`,
+      );
+    }
+    current = dependency;
+  }
+
+  chain.reverse();
+  chain.forEach((track, sid) => {
+    if (track.spatialId !== sid) {
+      throw new Error(`AV1 SVC spatial IDs must be contiguous from zero`);
+    }
+  });
+  return chain;
+}
+
+function validateAv1SvcTrack(
+  track: WarpTrack,
+  selected: WarpTrack,
+  namespace: string | undefined,
+): void {
+  if (track.namespace !== namespace) {
+    throw new Error(`AV1 SVC track ${track.name} crosses namespaces`);
+  }
+  if (track.packaging !== "loc" || track.role !== "video") {
+    throw new Error(`AV1 SVC track ${track.name} must be LOC video`);
+  }
+  if (!track.codec?.toLowerCase().startsWith("av01")) {
+    throw new Error(`AV1 SVC track ${track.name} must use AV1`);
+  }
+  if (!Number.isInteger(track.spatialId) || (track.spatialId as number) < 0) {
+    throw new Error(`AV1 SVC track ${track.name} has invalid spatialId`);
+  }
+  if (
+    track.codec !== selected.codec ||
+    track.renderGroup !== selected.renderGroup ||
+    track.framerate !== selected.framerate
+  ) {
+    throw new Error(
+      `AV1 SVC track ${track.name} is incompatible with ${selected.name}`,
+    );
+  }
+}
+
 /** DRM information for a track. */
 export interface ContentProtection {
   refID?: string;
