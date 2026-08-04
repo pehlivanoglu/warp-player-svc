@@ -7,6 +7,7 @@ import {
   Msg,
   Subscribe,
   SubscribeOk,
+  SubscribeError,
   Fetch,
   FetchError,
   FetchTypeStandalone,
@@ -905,10 +906,12 @@ export class TracksManager {
           requestId,
           (response: Message) => {
             unregisterOk();
+            const subscribeError = response as SubscribeError;
             this.logger.error(
-              `Received SubscribeError for ${namespace}:${trackName}: ${JSON.stringify(response)}`,
+              `Received SubscribeError for ${namespace}:${trackName}: ` +
+                `${subscribeError.code} ${subscribeError.reason}`,
             );
-            reject(new Error(`Subscribe failed: ${JSON.stringify(response)}`));
+            reject(new Error(`Subscribe failed: ${subscribeError.reason}`));
           },
         );
 

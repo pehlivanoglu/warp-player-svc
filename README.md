@@ -74,6 +74,17 @@ AV1 capability is checked with `VideoDecoder.isConfigSupported()`; current
 Chrome and Edge are the acceptance targets. The player does not provide a
 fallback when the browser rejects the advertised AV1 configuration.
 
+Automation may bypass namespace announcements with the `namespace` URL
+parameter:
+
+```text
+/?serverUrl=https://relay:9668/moq-relay&fingerprintUrl=http://origin:8081/fingerprint&namespace=msf%2Fclear
+```
+
+After connecting, the browser calls the public
+`Player.selectNamespace(namespace: string[])` API and opens that catalog
+directly. Later announcements do not replace the configured selection.
+
 Catalogs follow **MSF [draft-ietf-moq-msf-01]** with **CMSF
 [draft-ietf-moq-cmsf-01]** for CMAF packaging. The catalog `version` string must
 be `"draft-01"`. Initialization data lives in a catalog-level `initDataList`,

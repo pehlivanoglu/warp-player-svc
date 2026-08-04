@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Public `Player.selectNamespace()` and a `namespace` browser URL parameter
+  for orchestrators that know the catalog namespace and cannot rely on relay
+  replay of earlier announcements.
+
 - Clear LOC AV1 spatial-SVC playback. Catalog dependency chains are validated,
   all layers through the selected target are subscribed, and matching objects
   are reconstructed into one WebCodecs AV1 temporal unit using RFC 9626 frame
@@ -21,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the true 32x15 grid.
 - `IPlaybackPipeline.getPresentationTimeMs()` — the presentation time of the
   picture on screen, implemented by both render engines.
+
+### Fixed
+
+- Draft-16 `SUBSCRIBE` and `FETCH` request parameters now use the wire layout
+  accepted by strict relays such as moqx. `SUBSCRIBE_ERROR` logging no longer
+  attempts to JSON-encode BigInts.
 
 ## [0.12.0] - 2026-07-06
 

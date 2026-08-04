@@ -13,6 +13,7 @@ import {
   UnpublishNamespace,
   Location,
   FilterType,
+  GroupOrder,
 } from "./control";
 import { KeyValuePair } from "./stream";
 import { Version, isDraft16 } from "./version";
@@ -457,10 +458,12 @@ export class BufferCtrlWriter {
             msg.endGroup,
           ),
         });
-        params.push({
-          type: PARAM_GROUP_ORDER,
-          value: BigInt(msg.group_order),
-        });
+        if (msg.group_order !== GroupOrder.Publisher) {
+          params.push({
+            type: PARAM_GROUP_ORDER,
+            value: BigInt(msg.group_order),
+          });
+        }
         this.writeDeltaKeyValuePairs(params);
       } else {
         // Draft-14: inline fields
@@ -576,15 +579,15 @@ export class BufferCtrlWriter {
 
   /**
    * Marshals a Fetch message to the buffer (standalone or joining fetch).
-   * The layout is identical in draft-14 and draft-16 (§9.16): a standalone
-   * fetch carries namespace/track/range inline; a joining fetch carries
-   * only the joining request ID and joining start.
+   * Draft-16 moves priority and group order into request parameters.
    */
   public marshalFetch(msg: Fetch): BufferCtrlWriter {
     this.marshalWithLength(Id.Fetch, () => {
       this.writeVarInt62(msg.requestId);
-      this.writeUint8(msg.subscriberPriority);
-      this.writeUint8(msg.groupOrder);
+      if (!isDraft16(this.version)) {
+        this.writeUint8(msg.subscriberPriority);
+        this.writeUint8(msg.groupOrder);
+      }
       this.writeVarInt62(BigInt(msg.fetchType));
       if (msg.fetchType === FetchTypeStandalone) {
         if (msg.namespace === undefined || msg.trackName === undefined) {
@@ -603,7 +606,24 @@ export class BufferCtrlWriter {
         this.writeVarInt62(msg.joiningRequestId);
         this.writeVarInt62(msg.joiningStart ?? 0n);
       }
-      this.writeKeyValuePairs(msg.params);
+      if (isDraft16(this.version)) {
+        const params: KeyValuePair[] = [...(msg.params || [])];
+        if (msg.subscriberPriority !== 128) {
+          params.push({
+            type: PARAM_SUBSCRIBER_PRIORITY,
+            value: BigInt(msg.subscriberPriority),
+          });
+        }
+        if (msg.groupOrder !== GroupOrder.Publisher) {
+          params.push({
+            type: PARAM_GROUP_ORDER,
+            value: BigInt(msg.groupOrder),
+          });
+        }
+        this.writeDeltaKeyValuePairs(params);
+      } else {
+        this.writeKeyValuePairs(msg.params);
+      }
     });
     return this;
   }

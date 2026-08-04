@@ -62,3 +62,11 @@ default is used.
 
 1. After `npm run build`, edit `dist/config.json`.
 2. Reload the app; settings load on startup.
+
+For orchestration, URL parameters override connection settings. `serverUrl`
+and `fingerprintUrl` populate the connection, while `namespace` selects and
+opens that namespace's catalog immediately after the transport connects:
+
+```text
+?serverUrl=https://relay:9668/moq-relay&fingerprintUrl=http://origin:8081/fingerprint&namespace=msf%2Fclear
+```

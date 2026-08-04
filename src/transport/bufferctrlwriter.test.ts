@@ -76,6 +76,29 @@ describe("BufferCtrlWriter", () => {
       // Verify parameter count (0)
       expect(bytes[bytes.length - 1]).toBe(0);
     });
+
+    it("omits the forbidden default group order in draft-16", () => {
+      const d16Writer = new BufferCtrlWriter(Version.DRAFT_16);
+      const msg: Subscribe = {
+        kind: Msg.Subscribe,
+        requestId: 0n,
+        namespace: ["msf/clear"],
+        name: "catalog",
+        subscriber_priority: 0,
+        group_order: GroupOrder.Publisher,
+        forward: true,
+        filterType: FilterType.NextGroupStart,
+        params: [],
+      };
+
+      d16Writer.marshalSubscribe(msg);
+
+      // Three parameters: FORWARD, SUBSCRIBER_PRIORITY, SUBSCRIPTION_FILTER.
+      // GROUP_ORDER=0 is the implicit default and is invalid on the wire.
+      expect(Array.from(d16Writer.getBytes().slice(-8))).toEqual([
+        3, 0x10, 1, 0x10, 0, 1, 1, 1,
+      ]);
+    });
   });
 
   describe("SubscribeOk message", () => {
@@ -610,7 +633,7 @@ describe("BufferCtrlWriter", () => {
       expect(Array.from(bytes.slice(3))).toEqual([4, 0, 0, 0x02, 2, 0, 0]);
     });
 
-    it("should marshal a relative joining Fetch identically on draft-16", () => {
+    it("moves Fetch priority into parameters on draft-16", () => {
       const d16Writer = new BufferCtrlWriter(Version.DRAFT_16);
       const msg: Fetch = {
         kind: Msg.Fetch,
@@ -627,7 +650,9 @@ describe("BufferCtrlWriter", () => {
       const bytes = d16Writer.getBytes();
 
       expect(bytes[0]).toBe(0x16);
-      expect(Array.from(bytes.slice(3))).toEqual([4, 0, 0, 0x02, 2, 0, 0]);
+      // requestId, fetchType, joiningRequestId, joiningStart, then the
+      // delta-encoded SUBSCRIBER_PRIORITY parameter.
+      expect(Array.from(bytes.slice(3))).toEqual([4, 0x02, 2, 0, 1, 0x20, 0]);
     });
 
     it("should marshal a standalone Fetch with namespace, track and range", () => {

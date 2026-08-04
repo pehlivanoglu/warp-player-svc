@@ -694,6 +694,10 @@ async function connect() {
   try {
     // Connect to the server
     await player.connect();
+    const configuredNamespace = getUrlParams().get("namespace");
+    if (configuredNamespace) {
+      player.selectNamespace([configuredNamespace]);
+    }
     // Start/Stop buttons will be enabled by the connection state callback
 
     // Save connection settings to localStorage for future sessions

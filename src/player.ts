@@ -840,7 +840,7 @@ export class Player {
    * Select a namespace: unsubscribe from previous catalog, clear tracks,
    * subscribe to the new namespace's catalog.
    */
-  private selectNamespace(namespace: string[]): void {
+  public selectNamespace(namespace: string[]): void {
     const namespaceStr = namespace.join("/");
     this.logger.info(`Selecting namespace: ${namespaceStr}`);
 

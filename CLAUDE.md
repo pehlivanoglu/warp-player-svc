@@ -193,6 +193,9 @@ The codebase is organized into several key modules:
      active engine (or with ClearKey when unsupported) dim out
    - Drives a buffer-control loop that adjusts playback rate via
      `IPlaybackPipeline.setPlaybackRate` for either engine
+   - Exposes `Player.selectNamespace()`; the browser's `namespace` URL
+     parameter opens a configured catalog after connection without waiting
+     for namespace replay
    - Renders the engine legend overlay (namespace, engine, DRM, video/audio
      track names)
 
