@@ -579,15 +579,14 @@ export class BufferCtrlWriter {
 
   /**
    * Marshals a Fetch message to the buffer (standalone or joining fetch).
-   * Draft-16 moves priority and group order into request parameters.
+   * ponytail: keep the draft-14 layout until mlmpub's moqtransport parser
+   * accepts draft-16 FETCH parameters.
    */
   public marshalFetch(msg: Fetch): BufferCtrlWriter {
     this.marshalWithLength(Id.Fetch, () => {
       this.writeVarInt62(msg.requestId);
-      if (!isDraft16(this.version)) {
-        this.writeUint8(msg.subscriberPriority);
-        this.writeUint8(msg.groupOrder);
-      }
+      this.writeUint8(msg.subscriberPriority);
+      this.writeUint8(msg.groupOrder);
       this.writeVarInt62(BigInt(msg.fetchType));
       if (msg.fetchType === FetchTypeStandalone) {
         if (msg.namespace === undefined || msg.trackName === undefined) {
@@ -606,24 +605,7 @@ export class BufferCtrlWriter {
         this.writeVarInt62(msg.joiningRequestId);
         this.writeVarInt62(msg.joiningStart ?? 0n);
       }
-      if (isDraft16(this.version)) {
-        const params: KeyValuePair[] = [...(msg.params || [])];
-        if (msg.subscriberPriority !== 128) {
-          params.push({
-            type: PARAM_SUBSCRIBER_PRIORITY,
-            value: BigInt(msg.subscriberPriority),
-          });
-        }
-        if (msg.groupOrder !== GroupOrder.Publisher) {
-          params.push({
-            type: PARAM_GROUP_ORDER,
-            value: BigInt(msg.groupOrder),
-          });
-        }
-        this.writeDeltaKeyValuePairs(params);
-      } else {
-        this.writeKeyValuePairs(msg.params);
-      }
+      this.writeKeyValuePairs(msg.params);
     });
     return this;
   }

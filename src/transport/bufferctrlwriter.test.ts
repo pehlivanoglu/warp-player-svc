@@ -633,7 +633,7 @@ describe("BufferCtrlWriter", () => {
       expect(Array.from(bytes.slice(3))).toEqual([4, 0, 0, 0x02, 2, 0, 0]);
     });
 
-    it("moves Fetch priority into parameters on draft-16", () => {
+    it("uses the legacy Fetch layout on draft-16", () => {
       const d16Writer = new BufferCtrlWriter(Version.DRAFT_16);
       const msg: Fetch = {
         kind: Msg.Fetch,
@@ -650,9 +650,7 @@ describe("BufferCtrlWriter", () => {
       const bytes = d16Writer.getBytes();
 
       expect(bytes[0]).toBe(0x16);
-      // requestId, fetchType, joiningRequestId, joiningStart, then the
-      // delta-encoded SUBSCRIBER_PRIORITY parameter.
-      expect(Array.from(bytes.slice(3))).toEqual([4, 0x02, 2, 0, 1, 0x20, 0]);
+      expect(Array.from(bytes.slice(3))).toEqual([4, 0, 0, 0x02, 2, 0, 0]);
     });
 
     it("should marshal a standalone Fetch with namespace, track and range", () => {

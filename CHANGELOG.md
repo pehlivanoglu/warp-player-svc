@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Draft-16 `SUBSCRIBE` and `FETCH` request parameters now use the wire layout
-  accepted by strict relays such as moqx. `SUBSCRIBE_ERROR` logging no longer
-  attempts to JSON-encode BigInts.
+- Draft-16 `SUBSCRIBE` request parameters now use the wire layout accepted by
+  strict relays such as moqx. `SUBSCRIBE_ERROR` logging no longer attempts to
+  JSON-encode BigInts.
 
 ## [0.12.0] - 2026-07-06
 
