@@ -148,21 +148,42 @@ warp-player/
 
 ## Installation / Usage
 
-1. Install dependencies:
+### Run with moqlivemock AV1 spatial-SVC
 
-   ```
-   npm install
-   ```
+moqlivemock already includes a ready-to-run fixture at
+`assets/testsvc/video.mp4`; encoding is optional.
 
-2. Start the development server:
+Start publisher from `moqlivemock-svc/cmd/mlmpub`:
 
-   ```
-   npm start
-   ```
+```shell
+./generate-webtransport-cert.sh
+go run . \
+  -asset ../../assets/testsvc \
+  -cert cert-fp.pem \
+  -key key-fp.pem \
+  -sideport 8081
+```
 
-3. Open your browser at `https://localhost:8080`
+Video encoding and `svc_encoder_rtc` installation instructions live in the
+[`moqlivemock-svc README`](https://github.com/pehlivanoglu/moqlivemock-svc#encode-the-av1-spatial-svc-test-video).
 
-4. Enter the MOQ server URL (e.g., `https://localhost:4443/moq`) and click "Connect"
+Start player from `warp-player-svc`:
+
+```shell
+npm install
+npm start
+```
+
+Open `https://localhost:8080` and enter:
+
+```text
+MoQ server URL:  https://localhost:4443/moq
+Fingerprint URL: http://localhost:8081/fingerprint
+Namespace:       msf/clear
+Engine:          WebCodecs
+```
+
+Connect, choose `video/s0`, `video/s1`, or `video/s2`, then press **Start**.
 
 ### Connecting with Self-Signed Certificates
 
@@ -179,7 +200,9 @@ When using self-signed certificates for development, you have two options:
    - Use mkcert to install the certificate in your system trust store
    - Or manually accept the certificate warning in your browser
 
-For the easiest setup, use [moqlivemock](https://github.com/Eyevinn/moqlivemock) with `-fingerprintport 8081` which automatically generates compatible certificates.
+For the easiest setup, use
+[moqlivemock-svc](https://github.com/pehlivanoglu/moqlivemock-svc) with
+`-sideport 8081`, which automatically generates a compatible certificate.
 
 ## Development
 

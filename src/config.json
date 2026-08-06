@@ -1,6 +1,6 @@
 {
   "defaultServerUrl": "https://localhost:4443/moq",
-  "fingerprintUrl": "",
+  "fingerprintUrl": "http://localhost:8081/fingerprint",
   "bufferProfiles": {
     "base": { "minimalBuffer": 200, "targetLatency": 300 },
     "rules": []
