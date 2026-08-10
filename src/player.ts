@@ -22,6 +22,7 @@ import {
   isLocmafTrack,
 } from "./locmaf/locmaf";
 import { ILogger, LoggerFactory } from "./logger";
+import { MediaMetricsSnapshot, RollingBitrate } from "./metrics";
 import { StateChannel } from "./overlay";
 import { DomOverlayLayer } from "./overlay/overlayLayer";
 import { Cta608Renderer } from "./overlay/renderers/cta608";
@@ -232,6 +233,12 @@ export class Player {
   private bufferLowThreshold = 0.3; // 300ms buffer threshold for warning
   private bufferCriticalThreshold = 0.1; // 100ms buffer threshold for recovery action
   private playbackStalled = false;
+  private receiveVideoBitrate = new RollingBitrate();
+  private playerVideoBitrate = new RollingBitrate();
+  private metricStallCount = 0;
+  private metricStalled = false;
+  private metricStallStartedAt: number | null = null;
+  private metricStallDurationMs = 0;
   private recoveryAttempts = 0;
   private maxRecoveryAttempts = 3;
   private lastErrorTime = 0;
@@ -443,6 +450,107 @@ export class Player {
       return false;
     }
     return this.namespaceMatchesEngineChoice(namespace, engineChoice);
+  }
+
+  public getMetricsSnapshot(): MediaMetricsSnapshot {
+    const now = Date.now();
+    const pipeline = this.currentPipeline;
+    let latencyMs: number | null = null;
+    let bufferMs: number | null = null;
+    let playbackRate: number | null = null;
+    if (pipeline) {
+      const snapshot = pipeline.getLatencySnapshot();
+      latencyMs = snapshot.currentLatencyMs;
+      bufferMs = snapshot.videoBufferedAheadS * 1000;
+      playbackRate = pipeline.getPlaybackRate();
+    }
+
+    const metricsStalled =
+      this.playbackStalled ||
+      (pipeline?.engine === "webcodecs" &&
+        this.playbackStarted &&
+        bufferMs === 0 &&
+        latencyMs !== null &&
+        latencyMs > this.targetLatencyMs + this.minimalBufferMs);
+    this.updateMetricStall(metricsStalled, now);
+
+    const active = this.videoTrack;
+    const chain = this.av1SvcChain.length
+      ? this.av1SvcChain
+      : active
+        ? [active]
+        : [];
+    const hasCatalogBitrate = chain.some((track) => track.bitrate != null);
+    const catalogBitrate = hasCatalogBitrate
+      ? chain.reduce((sum, track) => sum + (track.bitrate ?? 0), 0)
+      : null;
+    const currentStallMs =
+      this.metricStallStartedAt === null ? 0 : now - this.metricStallStartedAt;
+
+    return {
+      schema_version: 1,
+      sampled_at_unix_ms: now,
+      client: "chrome",
+      simulated: false,
+      state: metricsStalled
+        ? "stalled"
+        : this.playbackStarted
+          ? "playing"
+          : active
+            ? "buffering"
+            : "starting",
+      target_track: this.av1SvcCandidate?.selected.name ?? active?.name ?? null,
+      active_track: active?.name ?? null,
+      switch_state:
+        this.av1SvcCandidate || this.av1SvcSwitching
+          ? "waiting_independent"
+          : "stable",
+      quality: {
+        spatial_id: active?.spatialId ?? null,
+        width: active?.width ?? null,
+        height: active?.height ?? null,
+      },
+      e2e_latency_ms: latencyMs,
+      player_bitrate_bps: pipeline
+        ? this.playerVideoBitrate.bitrate(now)
+        : null,
+      receive_bitrate_bps: this.receiveVideoBitrate.bitrate(now),
+      catalog_bitrate_bps: catalogBitrate,
+      buffer_level_ms: bufferMs,
+      playback_rate: playbackRate,
+      stall_count: this.metricStallCount,
+      stall_duration_ms: this.metricStallDurationMs + currentStallMs,
+    };
+  }
+
+  private setPlaybackStalled(stalled: boolean): void {
+    if (this.playbackStalled === stalled) {
+      return;
+    }
+    this.playbackStalled = stalled;
+    this.updateMetricStall(stalled, Date.now());
+  }
+
+  private updateMetricStall(stalled: boolean, now: number): void {
+    if (!this.playbackStarted || this.metricStalled === stalled) {
+      return;
+    }
+    this.metricStalled = stalled;
+    if (stalled) {
+      this.metricStallCount++;
+      this.metricStallStartedAt = now;
+    } else if (this.metricStallStartedAt !== null) {
+      this.metricStallDurationMs += now - this.metricStallStartedAt;
+      this.metricStallStartedAt = null;
+    }
+  }
+
+  private routeVideoObject(
+    pipeline: IPlaybackPipeline,
+    object: MOQObject,
+  ): void {
+    this.playerVideoBitrate.add(object.data.byteLength);
+    pipeline.routeObject("video", object);
   }
 
   /**
@@ -1736,6 +1844,12 @@ export class Player {
     this.videoErrorCount = 0;
     this.audioErrorCount = 0;
     this.playbackStalled = false;
+    this.receiveVideoBitrate.clear();
+    this.playerVideoBitrate.clear();
+    this.metricStallCount = 0;
+    this.metricStalled = false;
+    this.metricStallStartedAt = null;
+    this.metricStallDurationMs = 0;
     this.recoveryAttempts = 0;
     this.lastErrorTime = 0;
 
@@ -2455,7 +2569,7 @@ export class Player {
 
       // Check if we're stalled or about to stall
       if (videoEl.paused || videoEl.readyState < 3) {
-        this.playbackStalled = true;
+        this.setPlaybackStalled(true);
         this.logger.warn(
           "[BufferHealth] Playback stalled due to buffer underrun",
         );
@@ -2479,7 +2593,7 @@ export class Player {
       }
     } else if (this.playbackStalled && effectiveMinBuffer > minimalBufferSec) {
       // We have recovered from stalled state and have enough buffer
-      this.playbackStalled = false;
+      this.setPlaybackStalled(false);
       this.logger.info(
         `[BufferHealth] Playback recovered from stall, buffer above minimal threshold`,
       );
@@ -3005,7 +3119,7 @@ export class Player {
           if (isSvc) {
             this.routeAv1SvcObject(track, obj);
           } else {
-            pipeline.routeObject("video", obj);
+            this.routeVideoObject(pipeline, obj);
           }
         }),
       ),
@@ -3093,7 +3207,7 @@ export class Player {
         return;
       }
     }
-    pipeline.routeObject("video", obj);
+    this.routeVideoObject(pipeline, obj);
   }
 
   private chainContains(chain: WarpTrack[], track: WarpTrack): boolean {
@@ -3124,7 +3238,7 @@ export class Player {
     this.updateEngineLegend();
     previous?.dispose();
     candidate.heldCurrent.length = 0;
-    candidate.pipeline.routeObject("video", firstObject);
+    this.routeVideoObject(candidate.pipeline, firstObject);
     void this.unsubscribeTracks(candidate.removed).finally(() => {
       this.logger.info(
         `[AV1 SVC] Switched target to ${candidate.selected.name}; active tracks: ${candidate.chain.map((track) => track.name).join(", ")}`,
@@ -3147,7 +3261,7 @@ export class Player {
     candidate.error = error;
     candidate.assembler.dispose();
     for (const object of candidate.heldCurrent) {
-      candidate.pipeline.routeObject("video", object);
+      this.routeVideoObject(candidate.pipeline, object);
     }
     candidate.heldCurrent.length = 0;
     void this.unsubscribeTracks(candidate.added).finally(candidate.resolve);
@@ -3215,7 +3329,7 @@ export class Player {
           waitForIndependent: added.length > 0,
           onObject: (obj) => {
             if (candidate.committed) {
-              candidate.pipeline.routeObject("video", obj);
+              this.routeVideoObject(candidate.pipeline, obj);
             } else {
               this.commitAv1SvcCandidate(candidate, obj);
             }
@@ -4217,6 +4331,7 @@ export class Player {
               return;
             }
             obj.data = decoded.data;
+            this.playerVideoBitrate.add(obj.data.byteLength);
 
             if (!this.videoMediaBuffer || !this.videoMediaSegmentBuffer) {
               this.logger.error(
@@ -4384,6 +4499,7 @@ export class Player {
         namespace,
         trackName,
         (obj: MOQObject) => {
+          this.receiveVideoBitrate.add(obj.data.byteLength);
           onObject(obj);
         },
       );
@@ -5098,7 +5214,7 @@ export class Player {
       // Add event listener for stalled events
       videoEl.addEventListener("stalled", () => {
         this.logger.warn("[Playback] Stalled event detected");
-        this.playbackStalled = true;
+        this.setPlaybackStalled(true);
         this.recoverFromBufferUnderrun();
       });
 

@@ -6,6 +6,7 @@
  */
 import { BufferProfiles, DEFAULT_BUFFER_PROFILES } from "./bufferProfile";
 import { LoggerFactory, LogLevel } from "./logger";
+import type { MediaMetricsSnapshot } from "./metrics";
 import { Player } from "./player";
 import { DraftVersion } from "./transport/client";
 
@@ -262,6 +263,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     fingerprintUrlInput.value || undefined,
     draftVersionSelect.value as DraftVersion,
   );
+  (
+    window as Window & {
+      __moqlabPlayerMetrics?: () => MediaMetricsSnapshot | null;
+    }
+  ).__moqlabPlayerMetrics = () => player?.getMetricsSnapshot() ?? null;
 
   // Set connection state callback to manage button states
   player.setConnectionStateCallback((connected: boolean) => {
